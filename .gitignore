@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+
+# 整理产物 / 测试
+music_lib/
+musickit_report*.md
+musickit_report*.csv
+_test_*/
+_temp_*/
