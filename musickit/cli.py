@@ -37,6 +37,7 @@ def parse_args(argv=None) -> Namespace:
     p.add_argument('--no-dedupe', action='store_true', help='关闭去重')
     p.add_argument('--min-confidence', type=float, default=conf.MIN_CONFIDENCE,
                    help=f'自动接受阈值（默认 {conf.MIN_CONFIDENCE}，低于则标待确认）')
+    p.add_argument('--gui', action='store_true', help='启动图形界面（可拖拽目录）')
     p.add_argument('--self-test', action='store_true', help='生成夹具跑通全流程后退出')
     p.add_argument('--version', action='version', version=f'musickit {__version__}')
     return p.parse_args(argv)
@@ -249,8 +250,11 @@ def _fix_console():
 
 
 def main(argv=None) -> int:
-    ns = parse_args(argv)
     _fix_console()
+    ns = parse_args(argv)
+    if ns.gui:
+        from . import gui
+        return gui.main()
     if ns.self_test:
         return self_test()
     if not ns.input:

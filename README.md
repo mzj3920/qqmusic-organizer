@@ -32,6 +32,17 @@ pip install -r requirements.txt   # 仅新增 mutagen（requests/tqdm 大多数�
 
 ## 用法
 
+### 图形界面（推荐，支持拖拽）
+
+```bash
+pip install tkinterdnd2   # 可选：启用拖拽
+python -m musickit --gui
+```
+
+选好输入/输出目录和选项，点「开始整理」即可；日志实时滚动，结束自动生成报告。
+
+### 命令行
+
 ```bash
 python -m musickit <输入目录> [选项]
 ```
@@ -64,6 +75,7 @@ python -m musickit --self-test
 | `--min-confidence` | `0.7` | 自动接受阈值，低于则标待确认 |
 | `--report` | `musickit_report.md` | 报告路径（自动同时写同名 `.csv`） |
 | `--verbose` | 关 | 逐条打印匹配过程与得分 |
+| `--gui` | 关 | 启动图形界面（可拖拽目录） |
 
 ## 匹配与置信度
 
