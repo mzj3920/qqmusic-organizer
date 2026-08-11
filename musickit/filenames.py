@@ -83,12 +83,30 @@ def normalize(s: str) -> str:
     return s
 
 
+# 版本标注：括号以版本词开头即可，后面允许跟更多文字，
+# 如 (Live)、 (Live at the Royal Albert Hall, 2011)、 (伴奏)、 (Remix Extended)
 _VERSION_RE = re.compile(
-    r'\((live|remix|remastered|acoustic|伴奏|instrumental|piano|solo|clean|'
-    r'原版|现场版|demo|unplugged|dj|karaoke|版)\)'
+    r'[（(](?:live|remix|remastered|acoustic|伴奏|instrumental|piano|solo|clean|'
+    r'原版|现场|demo|unplugged|dj|karaoke|版)[^）)]*[）)]',
+    re.IGNORECASE,
+)
+_VERSION_KW = re.compile(
+    r'(live|remix|remastered|acoustic|伴奏|instrumental|piano|solo|clean|'
+    r'原版|现场|demo|unplugged|dj|karaoke|版)',
+    re.IGNORECASE,
 )
 
 
 def extract_versions(s: str) -> set:
-    """提取文件名里的版本标注（Live/伴奏/Remix…），匹配打分时保持一致。"""
-    return set(m.group(1) for m in _VERSION_RE.finditer((s or '').lower()))
+    """提取文件名里的版本标注，统一成规范词（Live/伴奏/Remix…）。
+
+    `(Live)` 和 `(Live at the Royal Albert Hall, 2011)` 都归一成 {'live'}，
+    匹配打分时用于保证版本一致。
+    """
+    versions = set()
+    for m in _VERSION_RE.finditer(s or ''):
+        inside = m.group(0)[1:-1]
+        kw = _VERSION_KW.match(inside)
+        if kw:
+            versions.add(kw.group(1).lower())
+    return versions

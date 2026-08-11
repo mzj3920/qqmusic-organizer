@@ -1,7 +1,5 @@
 """命令行入口与流水线编排：扫描→去重→匹配→补全→写标签→移动→报告。"""
 import argparse
-import shutil
-import struct
 import sys
 import tempfile
 from argparse import Namespace
@@ -39,6 +37,7 @@ def parse_args(argv=None) -> Namespace:
     p.add_argument('--no-dedupe', action='store_true', help='关闭去重')
     p.add_argument('--min-confidence', type=float, default=conf.MIN_CONFIDENCE,
                    help=f'自动接受阈值（默认 {conf.MIN_CONFIDENCE}，低于则标待确认）')
+    p.add_argument('--gui', action='store_true', help='启动图形界面（可拖拽目录）')
     p.add_argument('--self-test', action='store_true', help='生成夹具跑通全流程后退出')
     p.add_argument('--version', action='version', version=f'musickit {__version__}')
     return p.parse_args(argv)
@@ -49,9 +48,16 @@ def parse_args(argv=None) -> Namespace:
 # --------------------------------------------------------------------------
 
 def _match_and_enrich(it: Track, ns: Namespace):
-    # 内嵌标签优先（QQ 解密文件里已写好），文件名解析作兜底
-    title = it.emb_title or it.title
-    artist = it.emb_artist or it.artist
+    # 文件名带版本标注(Live/Remix…)时优先用文件名——QQ 内嵌标签常被剥掉版本后缀
+    # （如文件名 "Think of Me (Live at the Royal Albert Hall, 2011)"，内嵌只有 "Think of Me"），
+    # 否则用内嵌标签（更权威），文件名解析作兜底
+    if filenames.extract_versions(it.title):
+        # 文件名带版本标注时用文件名标题；歌手用内嵌标签兜底（文件名可能无歌手前缀）
+        title = it.title
+        artist = it.artist or it.emb_artist
+    else:
+        title = it.emb_title or it.title
+        artist = it.emb_artist or it.artist
     if not title:
         it.status = 'error'
         it.note = '无法从文件名/标签解析歌名'
@@ -65,7 +71,9 @@ def _match_and_enrich(it: Track, ns: Namespace):
         return
 
     m, conf_v = matcher.best_match(cands, title, artist, it.duration)
-    status = matcher.classify(conf_v, bool(artist))
+    # 有无歌手看 内嵌标签 + 文件名 两个来源（文件名可能没前缀但内嵌有）
+    has_artist = bool(it.emb_artist or it.artist)
+    status = matcher.classify(conf_v, has_artist)
     it.match = m
 
     if status != 'success' or m is None:
@@ -183,36 +191,17 @@ def _run(ns: Namespace) -> int:
 # 自检：生成最小 flac 夹具，跑通离线全流程 + 标签写入回读
 # --------------------------------------------------------------------------
 
-def _make_flac(path: Path, title: str, artist: str, album: str = ''):
-    """构造一个最小合法 FLAC（仅元数据块，无音频帧），供 mutagen 读写。"""
-    field = (44100 << 44) | ((2 - 1) << 41) | ((16 - 1) << 36) | 44100
-    streaminfo = (struct.pack('>HH', 4096, 4096) + b'\x00\x00\x00' + b'\x00\x00\x00'
-                  + struct.pack('>Q', field) + b'\x00' * 16)
-
-    kv_items = []
-    for k, v in (('TITLE', title), ('ARTIST', artist), ('ALBUM', album)):
-        if v:
-            kv_items.append(f'{k}={v}'.encode('utf-8'))
-    vendor = b'reference libFLAC 1.3.1 20141125'
-    vc = struct.pack('<I', len(vendor)) + vendor + struct.pack('<I', len(kv_items))
-    for kv in kv_items:
-        vc += struct.pack('<I', len(kv)) + kv
-
-    def block(type_, data, last):
-        return struct.pack('>I', (1 << 31 if last else 0) | (type_ << 24) | len(data)) + data
-
-    path.write_bytes(b'fLaC' + block(0, streaminfo, False) + block(4, vc, True))
-
-
 def self_test() -> int:
+    from . import _fixtures
     base = Path(tempfile.mkdtemp(prefix='musickit_selftest_'))
     src, out, rep = base / 'in', base / 'out', base / 'report.md'
     src.mkdir()
 
-    _make_flac(src / '陶喆 - 太美丽.flac', '太美丽', '陶喆', '黑色柳丁')
-    _make_flac(src / '陶喆 - 太美丽 (1).flac', '太美丽', '陶喆', '黑色柳丁')  # 字节重复
-    _make_flac(src / 'Memory.flac', 'Memory', '')
-    _make_flac(src / '孙楠 - 拯救 (Live)_EM.flac', '拯救 (Live)', '孙楠')
+    # 1) 离线流水线：flac 夹具 + 去重 + dry-run + 报告
+    _fixtures.make(src / '陶喆 - 太美丽.flac', '太美丽', '陶喆', '黑色柳丁')
+    _fixtures.make(src / '陶喆 - 太美丽 (1).flac', '太美丽', '陶喆', '黑色柳丁')  # 字节重复
+    _fixtures.make(src / 'Memory.flac', 'Memory', '')
+    _fixtures.make(src / '孙楠 - 拯救 (Live)_EM.flac', '拯救 (Live)', '孙楠')
 
     ns = Namespace(input=src, out=str(out), dry_run=True, verbose=False,
                    report=str(rep), offline=True, force=False, no_dedupe=False,
@@ -225,27 +214,34 @@ def self_test() -> int:
     csv = rep.with_suffix('.csv')
     assert '重复：1' in md, f'应识别 1 个重复，实际:\n{md}'
     assert csv.exists()
-    print('[1/2] 离线 dry-run 全流程 OK（4 文件 → 去重 1 → 报告生成）')
+    print('[1/3] 离线 dry-run 全流程 OK（4 文件 → 去重 1 → 报告生成）')
 
-    # 标签写入 + 回读
-    import os
-    from .models import Track as T
-    target = base / 'roundtrip.flac'
-    shutil.copy(src / '陶喆 - 太美丽.flac', target)
-    item = T(src=target)
-    item.en_title = '太美丽'
-    item.en_artist = '陶喆'
-    item.en_album = '黑色柳丁'
-    item.en_track = '3'
-    item.en_year = '2002'
-    item.en_genre = 'R&B'
-    item.lyrics = '[ti:太美丽]\n[00:01.00]太美丽\n'
-    item.cover = b'\xff\xd8\xff\xe0' + b'\x00' * 64  # 占位 JPEG
-    assert tags.write_tags(target, item), 'write_tags 失败'
-    info = tags.read_embedded(target)
-    assert info['title'] == '太美丽' and info['artist'] == '陶喆'
-    assert info['album'] == '黑色柳丁' and info['has_cover']
-    print('[2/2] 标签/封面/歌词写入+回读 OK')
+    # 2) 多格式标签/封面/歌词 写入 + 回读
+    for fmt in ('flac', 'ogg', 'mp3', 'm4a'):
+        p = base / f'roundtrip.{fmt}'
+        _fixtures.make(p, '测试歌', '测试歌手', '测试专辑')
+        item = Track(src=p)
+        item.en_title = '新标题'
+        item.en_artist = '新歌手'
+        item.en_album = '新专辑'
+        item.en_track = '7'
+        item.en_year = '2024'
+        item.en_genre = 'Pop'
+        item.lyrics = '[ti:新标题]\n[00:01.00]test\n'
+        item.cover = b'\xff\xd8\xff\xe0' + b'\x00' * 64  # 占位 JPEG
+        assert tags.write_tags(p, item), f'{fmt} 标签写入失败'
+        info = tags.read_embedded(p)
+        assert (info['title'] == '新标题' and info['artist'] == '新歌手'
+                and info['album'] == '新专辑' and info['has_cover']), f'{fmt} 回读不符'
+    print('[2/3] 多格式标签/封面/歌词写入+回读 OK（flac/ogg/mp3/m4a）')
+
+    # 3) 版本标注识别（长格式 / 全角 / 无标注）
+    from . import filenames
+    assert filenames.extract_versions('Think of Me (Live at the Royal Albert Hall, 2011)') == {'live'}
+    assert filenames.extract_versions('普通朋友（现场版）') == {'现场'}
+    assert filenames.extract_versions('太美丽') == set()
+    print('[3/3] 版本标注识别 OK（长格式/全角/无标注）')
+
     print(f'夹具目录（可删）：{base}')
     return 0
 
@@ -263,8 +259,11 @@ def _fix_console():
 
 
 def main(argv=None) -> int:
-    ns = parse_args(argv)
     _fix_console()
+    ns = parse_args(argv)
+    if ns.gui:
+        from . import gui
+        return gui.main()
     if ns.self_test:
         return self_test()
     if not ns.input:
