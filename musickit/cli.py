@@ -48,9 +48,16 @@ def parse_args(argv=None) -> Namespace:
 # --------------------------------------------------------------------------
 
 def _match_and_enrich(it: Track, ns: Namespace):
-    # 内嵌标签优先（QQ 解密文件里已写好），文件名解析作兜底
-    title = it.emb_title or it.title
-    artist = it.emb_artist or it.artist
+    # 文件名带版本标注(Live/Remix…)时优先用文件名——QQ 内嵌标签常被剥掉版本后缀
+    # （如文件名 "Think of Me (Live at the Royal Albert Hall, 2011)"，内嵌只有 "Think of Me"），
+    # 否则用内嵌标签（更权威），文件名解析作兜底
+    if filenames.extract_versions(it.title):
+        # 文件名带版本标注时用文件名标题；歌手用内嵌标签兜底（文件名可能无歌手前缀）
+        title = it.title
+        artist = it.artist or it.emb_artist
+    else:
+        title = it.emb_title or it.title
+        artist = it.emb_artist or it.artist
     if not title:
         it.status = 'error'
         it.note = '无法从文件名/标签解析歌名'
@@ -64,7 +71,9 @@ def _match_and_enrich(it: Track, ns: Namespace):
         return
 
     m, conf_v = matcher.best_match(cands, title, artist, it.duration)
-    status = matcher.classify(conf_v, bool(artist))
+    # 有无歌手看 内嵌标签 + 文件名 两个来源（文件名可能没前缀但内嵌有）
+    has_artist = bool(it.emb_artist or it.artist)
+    status = matcher.classify(conf_v, has_artist)
     it.match = m
 
     if status != 'success' or m is None:
